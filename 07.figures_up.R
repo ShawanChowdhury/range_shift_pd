@@ -12,7 +12,6 @@ library(geosphere)
 ############################################
 # SHARED SETTINGS AND DATA
 ############################################
-
 periods <- paste0("yr", 1:5)
 period_labels <- c(yr1 = "2001–2005", yr2 = "2006–2010", yr3 = "2011–2015",
                    yr4 = "2016–2020", yr5 = "2021–2025")
@@ -28,7 +27,7 @@ model_cols <- c("GBIF" = "#FFA500", "Combined" = "#9B21D5")
 
 MAP_FACT <- 3L                       # Map aggregation for display only; 1 = native resolution
 N_PER_CATEGORY <- 6000L             # Sampled suitable cells per category per period for Fig. 3c
-REBUILD_LAT3 <- FALSE               # Set TRUE when rasters, mask or sampling settings change
+REBUILD_LAT3 <- TRUE               # Set TRUE when rasters, mask or sampling settings change
 lat3_cache <- "output/figure/figure3_lat_elev_samples.rds"
 dir.create("output/figure", recursive = TRUE, showWarnings = FALSE)
 
@@ -94,23 +93,25 @@ panel_theme <- theme_classic(base_size = 10) +
 ############################################
 # FIGURE 1 | Distribution and source-specific grid coverage
 ############################################
-
-# GBIF is already cleaned; supplementary source tables follow the current input workflow.
+# Import occurrence data for Figure 1
 gbif_occ <- read.csv("data/occ/gbif.csv") %>%
-  transmute(longitude, latitude, year = suppressWarnings(as.integer(year)), source_group = "GBIF")
-facebook_occ <- read.csv("data/facebook/facebook.csv") %>%
-  transmute(longitude = lon, latitude = lat, year = suppressWarnings(as.integer(year)), source_group = "Supplementary")
-literature_occ <- read.csv("data/lit_review/lit_review.csv") %>%
-  transmute(longitude = lon, latitude = lat, year = suppressWarnings(as.integer(year)), source_group = "Supplementary")
+  transmute(cell, year_group, source_group = "GBIF")
 
-occ_all <- bind_rows(gbif_occ, facebook_occ, literature_occ) %>%
-  filter(is.finite(longitude), is.finite(latitude), !is.na(year), between(year, 2001, 2025)) %>%
-  mutate(year_group = periods[pmin(5L, (year - 2001L) %/% 5L + 1L)])
+supp_occ <- read.csv("data/occ/com.csv") %>%
+  filter(grepl("Facebook|Literature|Flickr", sources,
+               ignore.case = TRUE)) %>%
+  transmute(cell, year_group, source_group = "Supplementary")
 
-# Calculate grid-cell IDs on the same template used for occurrence cleaning.
+# Combine GBIF and supplementary grid-cell coverage
+occ_all <- bind_rows(gbif_occ, supp_occ) %>%
+  filter(!is.na(cell), !is.na(year_group))
+
+# Use raster-cell centres for mapping
 template <- terra::rast("data/env/env_overall.tif")[[1]]
-occ_all$cell <- terra::cellFromXY(template, as.matrix(occ_all[, c("longitude", "latitude")]))
-occ_all <- filter(occ_all, !is.na(cell))
+xy <- terra::xyFromCell(template, occ_all$cell)
+
+occ_all$longitude <- xy[, 1]
+occ_all$latitude <- xy[, 2]
 
 fig1_map_sf <- occ_all %>% distinct(source_group, cell, .keep_all = TRUE) %>%
   sf::st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
@@ -146,7 +147,6 @@ ggsave("output/figure/data_coverage.png", figure1, width = 12.5, height = 5.8, d
 ############################################
 # FIGURE 2 | Temporal dynamics in combined-data SDMs
 ############################################
-
 # 0 = never suitable, 1 = stable for all five periods, 2 = first-to-last gain,
 # 3 = first-to-last loss, 4 = other intermittent temporal suitability.
 n_suitable <- terra::app(r_stack, sum, na.rm = FALSE)
@@ -215,14 +215,14 @@ p2c <- ggplot(latitude_plot, aes(Period, shift_km, group = Hemisphere,
   scale_linetype_manual(values = c(Northern = "solid", Southern = "dashed")) +
   scale_shape_manual(values = c(Northern = 16, Southern = 17)) +
   scale_x_discrete(labels = short_labels) +
-  labs(x = NULL, y = "Poleward-edge shift (km)", linetype = NULL, shape = NULL) +
+  labs(x = NULL, y = "Poleward-edge shift (km)\n(95th percentile)", linetype = NULL, shape = NULL) +
   panel_theme + theme(legend.position = "bottom", legend.text = element_text(size = 8))
 
 p2d <- ggplot(metrics, aes(Period, elev95_shift_m, group = 1)) +
   geom_hline(yintercept = 0, colour = "grey70", linewidth = 0.35) +
   geom_line(colour = "black", linewidth = 0.7) + geom_point(colour = "black", size = 2.2) +
   scale_x_discrete(labels = short_labels) +
-  labs(x = NULL, y = "Upper elevational-edge shift (m)") + panel_theme
+  labs(x = NULL, y = "Elevational-edge shift (m)\n(95th percentile)") + panel_theme
 
 figure2 <- (p2a / (p2b | p2c | p2d)) +
   plot_layout(heights = c(1.6, 1), widths = c(1.2, 1, 1)) +
@@ -235,7 +235,6 @@ ggsave("output/figure/figure2_temporal_range_dynamics.png", figure2,
 ############################################
 # FIGURE 3 | GBIF-only vs combined-data SDMs
 ############################################
-
 # 0 = unsuitable in both, 1 = GBIF only, 2 = combined only, 3 = suitable in both.
 comparison <- setNames(lapply(seq_along(periods), function(i) {
   terra::ifel(land_mask == 1, gbif_stack[[i]] + 2 * r_stack[[i]], NA)

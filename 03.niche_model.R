@@ -13,7 +13,6 @@ dir.create("data/bg", showWarnings = FALSE)
 dir.create("output/sdm/gbif", showWarnings = FALSE, recursive = TRUE)
 dir.create("output/sdm/combined", showWarnings = FALSE, recursive = TRUE)
 
-
 #########################################
 # Creating a common calibration area
 # Use all combined occurrence records to define the study area
@@ -47,13 +46,10 @@ calibration_vect <- vect(calibration_area)
 
 #########################################
 # Importing background points
-
 bg <- read_csv("data/bg.csv", show_col_types = FALSE)
-
 
 #########################################
 # Function for running SDMs
-
 run_sdm <- function(data_file, dataset_name) {
   
   # Import occurrence data

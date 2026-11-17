@@ -14,7 +14,7 @@ period_levels <- unname(period_labels)
 vars <- c("PDSI", "ppt", "soil", "tmin", "ws", "elev")
 categories <- c("GBIF only", "Supplementary only", "Both")
 thresholds <- c(0.02, 0.05, 0.10)
-REBUILD_GRIDS <- FALSE  # Set TRUE if environmental data, PCA or grid parameters have changed.
+REBUILD_GRIDS <- TRUE  # Set TRUE if environmental data, PCA or grid parameters have changed.
 
 ###############################################
 # ENVIRONMENTAL BACKGROUND AND SHARED PCA
@@ -51,17 +51,39 @@ write.csv(data.frame(axis = c("PC1", "PC2"), variance_percent = as.numeric(pc_va
 
 ###############################################
 # OCCURRENCE SCORES AND CACHED NICHE GRIDS 
-# com = GBIF + Facebook + literature; supp = Facebook + literature only.
+# com = all four sources; supp = Facebook, literature and Flickr
 get_scores <- function(period, source) {
-  f <- paste0("data/occ/", period, "_", if (source == "supp") "com" else source, ".csv")
+  f <- paste0("data/occ/", period, "_",
+              if (source == "supp") "com" else source, ".csv")
+  
   if (!file.exists(f)) stop("Missing occurrence file: ", f)
   d <- read.csv(f)
-  if (source == "supp") d <- d[tolower(trimws(d$source)) %in% c("facebook", "literature"), , drop = FALSE]
-  if (nrow(d) < 5) stop("Too few records for ", period, " / ", source)
-  z <- terra::extract(env_list[[period]], as.matrix(d[, c("longitude", "latitude")]))
+  
+  # Include all cells containing supplementary records
+  if (source == "supp") {
+    d <- d %>%
+      filter(grepl("Facebook|Literature|Flickr", sources,
+                   ignore.case = TRUE))
+  }
+  
+  if (nrow(d) < 5) {
+    stop("Too few records for ", period, " / ", source)
+  }
+  
+  z <- terra::extract(
+    env_list[[period]],
+    as.matrix(d[, c("longitude", "latitude")])
+  )
+  
   z <- z[complete.cases(z[, vars]), vars, drop = FALSE]
-  if (nrow(z) < 5) stop("Too few valid environmental records for ", period, " / ", source)
-  as.data.frame(ade4::suprow(pca_shared, z)$lisup[, 1:2, drop = FALSE])
+  
+  if (nrow(z) < 5) {
+    stop("Too few valid records for ", period, " / ", source)
+  }
+  
+  as.data.frame(
+    ade4::suprow(pca_shared, z)$lisup[, 1:2, drop = FALSE]
+  )
 }
 
 occ_scores <- setNames(lapply(periods, function(p) {
@@ -102,9 +124,9 @@ grid_supp <- read_or_make_grids("supp", "output/niche_grids_supplementary.rds")
 
 ###############################################
 # Rebuild the niche grids in the current R session
-grid_com  <- setNames(lapply(periods, get_grid, source = "com"), periods)
-grid_gbif <- setNames(lapply(periods, get_grid, source = "gbif"), periods)
-grid_supp <- setNames(lapply(periods, get_grid, source = "supp"), periods)
+# grid_com  <- setNames(lapply(periods, get_grid, source = "com"), periods)
+# grid_gbif <- setNames(lapply(periods, get_grid, source = "gbif"), periods)
+# grid_supp <- setNames(lapply(periods, get_grid, source = "supp"), periods)
 
 # THREE-CATEGORY ENVIRONMENTAL COVERAGE AND THRESHOLD SENSITIVITY 
 # The percentages describe thresholded PCA grid-cell coverage, not geographic area or niche breadth.
