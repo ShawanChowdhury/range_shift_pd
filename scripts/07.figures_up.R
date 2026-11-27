@@ -25,9 +25,9 @@ comparison_cols <- c("GBIF only" = "#FFA500", "Combined only" = "#9B21D5",
                      "Suitable in both" = "#21D5E3")
 model_cols <- c("GBIF" = "#FFA500", "Combined" = "#9B21D5")
 
-MAP_FACT <- 3L                       # Map aggregation for display only; 1 = native resolution
-N_PER_CATEGORY <- 6000L             # Sampled suitable cells per category per period for Fig. 3c
-REBUILD_LAT3 <- TRUE               # Set TRUE when rasters, mask or sampling settings change
+MAP_FACT <- 3L  # display aggregation only
+N_PER_CATEGORY <- 6000L  # cells sampled for Fig. 3c
+REBUILD_LAT3 <- TRUE  # rebuild cached samples
 lat3_cache <- "output/figure/figure3_lat_elev_samples.rds"
 dir.create("output/figure", recursive = TRUE, showWarnings = FALSE)
 
@@ -44,8 +44,11 @@ read_stack <- function(source) {
   x
 }
 
-r_stack <- read_stack("combined")
-gbif_stack <- read_stack("gbif")
+# Figure settings
+fig2_sources <- strsplit(Sys.getenv("FIG2_SOURCES", "combined,unified"), ",")[[1]]
+run_fig13 <- as.logical(Sys.getenv("RUN_FIG13", "TRUE"))
+r_stack <- read_stack(if (run_fig13) "combined" else fig2_sources[1])
+gbif_stack <- if (run_fig13) read_stack("gbif") else r_stack
 ref <- r_stack[[1]]
 if (!terra::is.lonlat(ref)) stop("The SDM raster should have longitude/latitude coordinates")
 for (i in seq_along(periods)) {
@@ -59,14 +62,14 @@ land_v$land_flag <- 1L
 land_mask <- terra::rasterize(land_v, ref, field = "land_flag", background = 0)
 cell_area <- terra::cellSize(ref, unit = "km")
 
-# Elevation is static across the five model periods (created in Script 01).
+# Static elevation (from 01)
 elev <- terra::rast("data/env/env_yr1.tif")[["elev"]]
 if (!terra::compareGeom(ref, elev, crs = FALSE, stopOnError = FALSE)) {
   elev <- terra::project(elev, ref, method = "bilinear")
 }
 if (!terra::compareGeom(ref, elev, crs = FALSE, stopOnError = FALSE)) stop("Elevation grid is not aligned")
 
-# Reusable raster-to-plot conversion; native raster values are unchanged in analyses.
+# Raster to plot data
 map_to_df <- function(r, codes, labels, period = NULL) {
   x <- terra::crop(r, map_extent)
   x <- terra::ifel(x %in% codes, x, NA)
@@ -90,19 +93,20 @@ panel_theme <- theme_classic(base_size = 10) +
         axis.text.y = element_text(size = 8), axis.title = element_text(size = 9),
         plot.margin = margin(6, 8, 6, 6))
 
+if (run_fig13) {
 ############################################
-# FIGURE 1 | Distribution and source-specific grid coverage
+# FIGURE 1
 ############################################
-# Import occurrence data for Figure 1
+# Occurrences for Figure 1
 gbif_occ <- read.csv("data/occ/gbif.csv") %>%
   transmute(cell, year_group, source_group = "GBIF")
 
 supp_occ <- read.csv("data/occ/com.csv") %>%
-  filter(grepl("Facebook|Literature|Flickr", sources,
+  filter(grepl("Facebook|Literature|Flickr|Lohman", sources,
                ignore.case = TRUE)) %>%
   transmute(cell, year_group, source_group = "Supplementary")
 
-# Combine GBIF and supplementary grid-cell coverage
+# Combine grid-cell coverage
 occ_all <- bind_rows(gbif_occ, supp_occ) %>%
   filter(!is.na(cell), !is.na(year_group))
 
@@ -124,7 +128,7 @@ p1a <- ggplot() +
   labs(colour = NULL) + theme_void() +
   theme(legend.position = "bottom", plot.margin = margin(5, 5, 5, 5))
 
-# A shared grid cell can contribute to both source totals; these are source-specific shares.
+# Source-specific shares
 fig1_bar_dat <- occ_all %>% distinct(year_group, source_group, cell) %>%
   count(year_group, source_group, name = "n_cells") %>%
   group_by(year_group) %>% mutate(prop = n_cells / sum(n_cells)) %>% ungroup() %>%
@@ -143,17 +147,20 @@ p1b <- ggplot(fig1_bar_dat, aes(year_group, prop, fill = source_group)) +
 figure1 <- p1a + p1b + plot_layout(widths = c(1.7, 1))
 print(figure1)
 ggsave("output/figure/data_coverage.png", figure1, width = 12.5, height = 5.8, dpi = 400, bg = "white")
+}
 
+for (fig2_source in fig2_sources) {
+fig_stack <- read_stack(fig2_source)
+sfx <- if (fig2_source == "combined") "" else paste0("_", fig2_source)
 ############################################
-# FIGURE 2 | Temporal dynamics in combined-data SDMs
+# FIGURE 2
 ############################################
-# 0 = never suitable, 1 = stable for all five periods, 2 = first-to-last gain,
-# 3 = first-to-last loss, 4 = other intermittent temporal suitability.
-n_suitable <- terra::app(r_stack, sum, na.rm = FALSE)
+# Codes: stable, gain, loss, intermittent
+n_suitable <- terra::app(fig_stack, sum, na.rm = FALSE)
 change_map <- terra::ifel(n_suitable == 0, 0,
                           terra::ifel(n_suitable == 5, 1,
-                                      terra::ifel(r_stack[[1]] == 0 & r_stack[[5]] == 1, 2,
-                                                  terra::ifel(r_stack[[1]] == 1 & r_stack[[5]] == 0, 3, 4))))
+                                      terra::ifel(fig_stack[[1]] == 0 & fig_stack[[5]] == 1, 2,
+                                                  terra::ifel(fig_stack[[1]] == 1 & fig_stack[[5]] == 0, 3, 4))))
 change_map <- terra::ifel(land_mask == 1, change_map, NA)
 map2 <- map_to_df(change_map, 1:4, names(change_cols))
 
@@ -166,15 +173,15 @@ p2a <- ggplot() +
   theme(legend.position = "bottom", legend.text = element_text(size = 8),
         plot.margin = margin(4, 4, 4, 4))
 
-# Area calculated from land-masked classified rasters, not global cell-area subtraction.
+# Area from land-masked rasters
 area_dat <- bind_rows(lapply(seq_along(periods), function(i) {
-  x <- terra::ifel(land_mask == 1, r_stack[[i]], NA)
+  x <- terra::ifel(land_mask == 1, fig_stack[[i]], NA)
   a <- terra::expanse(x, unit = "km", byValue = TRUE)
   data.frame(Period = period_labels[[periods[i]]],
              area_mkm2 = sum(a$area[a$value == 1], na.rm = TRUE) / 1e6,
              modelled_mkm2 = sum(a$area, na.rm = TRUE) / 1e6)
 })) %>% mutate(Period = factor(Period, levels = period_levels))
-write.csv(area_dat, "output/figure/figure2_suitable_area.csv", row.names = FALSE)
+write.csv(area_dat, paste0("output/figure/figure2_suitable_area", sfx, ".csv"), row.names = FALSE)
 
 p2b <- ggplot(area_dat, aes(Period, area_mkm2, group = 1)) +
   geom_line(colour = "black", linewidth = 0.7) + geom_point(colour = "black", size = 2.2) +
@@ -182,7 +189,7 @@ p2b <- ggplot(area_dat, aes(Period, area_mkm2, group = 1)) +
   labs(x = NULL, y = "Suitable habitat (million km²)") + panel_theme
 
 get_shift_metrics <- function(period) {
-  r <- r_stack[[match(period, periods)]]
+  r <- fig_stack[[match(period, periods)]]
   cells <- which(terra::values(terra::ifel(land_mask == 1, r, NA), mat = FALSE) == 1)
   if (!length(cells)) stop("No suitable land cells in: ", period)
   latitude <- terra::xyFromCell(r, cells)[, 2]
@@ -202,7 +209,7 @@ metrics <- bind_rows(lapply(periods, get_shift_metrics)) %>%
          south_shift_km = (south95_deg - first(south95_deg)) * 111.2,
          elev95_shift_m = elev95_m - first(elev95_m),
          mean_elev_shift_m = mean_elev_m - first(mean_elev_m))
-write.csv(metrics, "output/latitudinal_elevational_shifts.csv", row.names = FALSE)
+write.csv(metrics, paste0("output/latitudinal_elevational_shifts", sfx, ".csv"), row.names = FALSE)
 
 latitude_plot <- metrics %>% select(Period, north_shift_km, south_shift_km) %>%
   pivot_longer(-Period, names_to = "Hemisphere", values_to = "shift_km") %>%
@@ -229,13 +236,15 @@ figure2 <- (p2a / (p2b | p2c | p2d)) +
   plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")") &
   theme(plot.tag = element_text(face = "bold", size = 12))
 print(figure2)
-ggsave("output/figure/figure2_temporal_range_dynamics.png", figure2,
+ggsave(paste0("output/figure/figure2_temporal_range_dynamics", sfx, ".png"), figure2,
        width = 11.69, height = 7.2, dpi = 400, bg = "white")
+}
 
+if (run_fig13) {
 ############################################
-# FIGURE 3 | GBIF-only vs combined-data SDMs
+# FIGURE 3
 ############################################
-# 0 = unsuitable in both, 1 = GBIF only, 2 = combined only, 3 = suitable in both.
+# 0 neither,1 GBIF,2 combined,3 both
 comparison <- setNames(lapply(seq_along(periods), function(i) {
   terra::ifel(land_mask == 1, gbif_stack[[i]] + 2 * r_stack[[i]], NA)
 }), periods)
@@ -259,12 +268,12 @@ p3a <- ggplot() +
 ############################################
 MAP_FACT <- 2L
 map3 <- bind_rows(lapply(periods, function(p) {
-  
+
   r <- terra::crop(comparison[[p]], map_extent)
   r <- terra::ifel(r %in% 1:3, r, NA)
-  
+
   if (MAP_FACT > 1L) r <- terra::aggregate(r, fact = MAP_FACT, fun = "modal", na.rm = TRUE)
-  
+
   d <- as.data.frame(r, xy = TRUE, na.rm = TRUE)
   names(d) <- c("longitude", "latitude", "code")
   d$category <- factor(d$code, levels = 1:3, labels = names(comparison_cols))
@@ -318,7 +327,7 @@ p3b <- ggplot(area3, aes(Period, difference_mkm2, group = 1)) +
   scale_x_discrete(labels = short_labels) +
   labs(x = NULL, y = "Combined − GBIF (million km²)") + panel_theme
 
-# Descriptive, stratified sample of modelled suitable cells for Fig. 3c.
+# Sample suitable cells (Fig. 3c)
 sample_comparison <- function(period) {
   r <- comparison[[period]]; v <- terra::values(r, mat = FALSE)
   cells <- unlist(lapply(1:3, function(k) {
@@ -353,7 +362,7 @@ p3c <- ggplot(lat3_summary, aes(lat_band, median_elev, colour = category, group 
   scale_colour_manual(values = comparison_cols, guide = "none") +
   labs(x = "Latitude (°)", y = "Median elevation (m)") + panel_theme
 
-# Area-weighted geographic centroids, with each model referenced to its own 2001–2005 centroid.
+# Area-weighted centroids
 get_centroid <- function(i, source) {
   r <- if (source == "GBIF") gbif_stack[[i]] else r_stack[[i]]
   cells <- which(terra::values(terra::ifel(land_mask == 1, r, NA), mat = FALSE) == 1)
@@ -398,3 +407,4 @@ print(figure3)
 
 ggsave("output/figure/figure3_data_source_comparison.png",
        figure3, width = 11.69, height = 8.27, dpi = 400, bg = "white")
+}

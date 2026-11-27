@@ -7,17 +7,18 @@ library(dplyr)
 
 # Settings and shared spatial layers
 periods <- paste0("yr", 1:5)
-sources <- c("gbif", "combined")
+# Model sets to analyse
+sources <- strsplit(Sys.getenv("SDM_SOURCES", "gbif,combined,unified"), ",")[[1]]
 old_year <- c("yr1", "yr2", "yr3", "yr4", "yr1")
 new_year <- c("yr2", "yr3", "yr4", "yr5", "yr5")
 
 # dir.create("output", showWarnings = FALSE, recursive = TRUE)
 
 template <- terra::rast(
-  "output/bin_maps_full/combined_bin_yr1.tif"
+  sprintf("output/bin_maps_full/%s_bin_yr1.tif", sources[1])
 )
 
-# Use the same land layer and resolution as 07.figures_up.R.
+# Land layer as in 07
 land <- rnaturalearth::ne_download(
   scale = 50,
   type = "land",
@@ -38,7 +39,7 @@ land_mask <- terra::rasterize(
   background = 0
 )
 
-# Country boundaries are rasterised on exactly the same grid.
+# Rasterise countries on grid
 countries <- rnaturalearth::ne_countries(
   scale = "medium",
   returnclass = "sv"
@@ -62,7 +63,7 @@ country_raster <- terra::mask(
 
 cell_area <- terra::cellSize(template, unit = "km")
 
-# Static elevation, consistent with the figure-analysis script.
+# Static elevation
 elev <- terra::rast("data/env/env_yr1.tif")[["elev"]]
 
 if (!terra::compareGeom(
@@ -82,13 +83,13 @@ read_binary <- function(source, period) {
     source, period
   )
   if (!file.exists(file)) stop("Missing raster: ", file)
-  
+
   r <- terra::rast(file)
   if (!terra::compareGeom(r, template, stopOnError = FALSE)) {
     stop("Raster geometry does not match template: ", file)
   }
-  
-  # Keep terrestrial cells; retain NA outside the modelled area.
+
+  # Keep terrestrial cells
   terra::mask(r, land_mask, maskvalues = 0)
 }
 
@@ -106,7 +107,7 @@ suitable_area <- function(r) {
   area_for(area_table(r), 1)
 }
 
-# Check that both maps cover the same valid cells on land.
+# Check matching land cells
 assert_valid_extent <- function(old, new, label) {
   old_valid <- !is.na(old)
   new_valid <- !is.na(new)
@@ -119,7 +120,7 @@ assert_valid_extent <- function(old, new, label) {
   }
 }
 
-# Suitable area, centroid and mean elevation
+# Area, centroid and elevation
 period_rows <- list()
 k <- 0L
 
@@ -127,27 +128,27 @@ for (source in sources) {
   for (period in periods) {
     message("Period metrics: ", source, " / ", period)
     r <- read_binary(source, period)
-    
-    # expanse() excludes NA and groups by raster class.
+
+    # Area per raster class
     area_km2 <- suitable_area(r)
-    
-    # Use the same area-weighted spherical centroid as Figure 3.
+
+    # Area-weighted spherical centroid
     cells <- which(terra::values(r, mat = FALSE) == 1)
     if (!length(cells)) {
       stop("No suitable land cells: ", source, " / ", period)
     }
-    
+
     xy <- terra::xyFromCell(r, cells)
     w <- terra::extract(cell_area, cells)[, 1]
     rad <- xy * pi / 180
-    
+
     x <- sum(w * cos(rad[, 2]) * cos(rad[, 1]))
     y <- sum(w * cos(rad[, 2]) * sin(rad[, 1]))
     z <- sum(w * sin(rad[, 2]))
-    
+
     centroid_lon <- atan2(y, x) * 180 / pi
     centroid_lat <- atan2(z, sqrt(x^2 + y^2)) * 180 / pi
-    
+
     elevation <- terra::extract(elev, cells)[, 1]
     valid <- is.finite(elevation) & is.finite(w) & w > 0
     mean_elev <- if (any(valid)) {
@@ -155,7 +156,7 @@ for (source in sources) {
     } else {
       NA_real_
     }
-    
+
     k <- k + 1L
     period_rows[[k]] <- data.frame(
       source = source,
@@ -176,7 +177,7 @@ for (source in sources) {
   first_xy <- as.numeric(period_metrics[
     ids[1], c("centroid_lon", "centroid_lat")
   ])
-  
+
   period_metrics$centroid_shift_from_yr1_km[ids] <- vapply(
     ids,
     function(i) {
@@ -195,7 +196,7 @@ write.csv(
   row.names = FALSE
 )
 
-# 4. Temporal gain, loss, persistence and country summaries
+# 4. Temporal and country summaries
 change_rows <- list()
 country_rows <- list()
 k <- 0L
@@ -206,25 +207,25 @@ for (source in sources) {
     new_p <- new_year[j]
     transition <- paste0(old_p, "_to_", new_p)
     message("Temporal change: ", source, " / ", transition)
-    
+
     old <- read_binary(source, old_p)
     new <- read_binary(source, new_p)
     assert_valid_extent(old, new, transition)
-    
-    # Categories: 0 neither, 1 loss, 2 gain, 3 persistence.
+
+    # 0 neither,1 loss,2 gain,3 persistence
     change <- old + 2 * new
     tab <- area_table(change)
-    
+
     if (any(!tab$value %in% 0:3)) {
       stop("Unexpected binary change values: ", transition)
     }
-    
+
     loss <- area_for(tab, 1)
     gain <- area_for(tab, 2)
     persistence <- area_for(tab, 3)
     old_area <- loss + persistence
     new_area <- gain + persistence
-    
+
     # Validate independently calculated areas.
     old_check <- suitable_area(old)
     new_check <- suitable_area(new)
@@ -232,7 +233,7 @@ for (source in sources) {
         abs(new_area - new_check) > 1) {
       stop("Area reconciliation failed: ", transition)
     }
-    
+
     old_metrics <- period_metrics[
       period_metrics$source == source &
         period_metrics$year == old_p, , drop = FALSE
@@ -241,15 +242,15 @@ for (source in sources) {
       period_metrics$source == source &
         period_metrics$year == new_p, , drop = FALSE
     ]
-    
+
     centroid_shift <- geosphere::distGeo(
       c(old_metrics$centroid_lon, old_metrics$centroid_lat),
       c(new_metrics$centroid_lon, new_metrics$centroid_lat)
     ) / 1000
-    
+
     elev_change <- new_metrics$mean_elevation_m -
       old_metrics$mean_elevation_m
-    
+
     k <- k + 1L
     change_rows[[k]] <- data.frame(
       source = source,
@@ -263,22 +264,22 @@ for (source in sources) {
       centroid_shift_km = centroid_shift,
       elevational_change_m = elev_change
     )
-    
+
     writeRaster(
       change,
       sprintf("output/%s_change_%s_%s.tif",
               source, old_p, new_p),
       overwrite = TRUE
     )
-    
-    # Exact raster-category areas assigned by country zones.
+
+    # Category areas by country
     tab_country <- area_table(change, zones = country_raster)
     country <- data.frame(
       id = countries$id,
       country = countries$admin,
       iso3 = countries$iso_a3
     )
-    
+
     for (code in 1:3) {
       field <- c("loss_km2", "gain_km2",
                  "persistence_km2")[code]
@@ -289,12 +290,12 @@ for (source in sources) {
       country[[field]] <- z$area[match(country$id, z$zone)]
       country[[field]][is.na(country[[field]])] <- 0
     }
-    
+
     country$source <- source
     country$transition <- transition
     country$net_change_km2 <- country$gain_km2 -
       country$loss_km2
-    
+
     country_rows[[k]] <- country[
       , c("country", "iso3", "source", "transition",
           "gain_km2", "loss_km2", "persistence_km2",
@@ -317,40 +318,41 @@ write.csv(
   row.names = FALSE
 )
 
-# GBIF-only versus combined-data suitability maps
+# GBIF-only vs combined maps
+run_source_comparison <- all(c("gbif", "combined") %in% sources)
+if (run_source_comparison) {
 gbif_rows <- list()
 env_rows <- list()
 
 for (i in seq_along(periods)) {
   period <- periods[i]
   message("Source comparison: ", period)
-  
+
   gbif <- read_binary("gbif", period)
   combined <- read_binary("combined", period)
   assert_valid_extent(gbif, combined, period)
-  
-  # Categories: 0 neither, 1 GBIF only, 2 combined only,
-  # 3 suitable in both.
+
+  # 0 neither,1 GBIF,2 combined,3 both
   comparison <- gbif + 2 * combined
   tab <- area_table(comparison)
-  
+
   if (any(!tab$value %in% 0:3)) {
     stop("Unexpected source comparison values: ", period)
   }
-  
+
   gbif_only <- area_for(tab, 1)
   combined_only <- area_for(tab, 2)
   shared <- area_for(tab, 3)
   union <- gbif_only + combined_only + shared
-  
+
   gbif_area <- gbif_only + shared
   combined_area <- combined_only + shared
-  
+
   if (abs(gbif_area - suitable_area(gbif)) > 1 ||
       abs(combined_area - suitable_area(combined)) > 1) {
     stop("Source comparison failed area check: ", period)
   }
-  
+
   gbif_rows[[i]] <- data.frame(
     year = period,
     gbif_only_km2 = gbif_only,
@@ -362,14 +364,14 @@ for (i in seq_along(periods)) {
       NA_real_
     }
   )
-  
+
   writeRaster(
     comparison,
     paste0("output/gbif_combined_", period, ".tif"),
     overwrite = TRUE
   )
-  
-  # Align environmental predictors with the full-extent SDM grid.
+
+  # Align predictors to SDM grid
   env <- terra::rast(paste0("data/env/env_", period, ".tif"))
   if (!terra::compareGeom(
     env[[1]], template, stopOnError = FALSE
@@ -380,22 +382,22 @@ for (i in seq_along(periods)) {
       env <- terra::project(env, template, method = "bilinear")
     }
   }
-  
+
   stopifnot(terra::compareGeom(
     env[[1]], template, stopOnError = FALSE
   ))
-  
-  # Include environmental values only in combined-only cells.
+
+  # Combined-only cell environments
   combined_unique <- terra::ifel(comparison == 2, 1, NA)
   env_unique <- terra::mask(env, combined_unique)
-  
+
   env_mean <- terra::global(
     env_unique, "mean", na.rm = TRUE
   )[, 1]
   env_sd <- terra::global(
     env_unique, "sd", na.rm = TRUE
   )[, 1]
-  
+
   env_rows[[i]] <- data.frame(
     year = period,
     variable = names(env),
@@ -417,6 +419,7 @@ write.csv(
   "output/combined_only_environment.csv",
   row.names = FALSE
 )
+}
 
 # Final checks and summaries
 stopifnot(all(abs(
@@ -427,7 +430,7 @@ stopifnot(all(abs(
 
 print(period_metrics)
 print(temporal_change)
-print(gbif_combined)
+if (run_source_comparison) print(gbif_combined)
 
 #######################
 # Largest net increases and decreases
@@ -445,7 +448,7 @@ country_change %>%
     net_change_km2
   )
 
-# Australia and China across all transitions
+# Australia and China transitions
 country_change %>%
   filter(
     source == "combined",
@@ -457,7 +460,6 @@ country_change %>%
     net_change_km2
   ) %>%
   arrange(country, transition)
-
 
 country_change %>%
   filter(

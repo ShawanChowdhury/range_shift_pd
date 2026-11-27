@@ -4,8 +4,7 @@ library(dplyr)
 library(readr)
 
 #########################################
-# Settings
-# TerraClimate predictor variables
+# Settings TerraClimate predictor variables
 pred_vars <- c("aet", "def", "PDSI", "pet", "ppt", "q", "soil", "tmax", "tmin", "ws")
 
 # Five 5-year periods
@@ -22,50 +21,50 @@ dir.create("data/pred_mean", showWarnings = FALSE, recursive = TRUE)
 dir.create("data/pred_mean/ov", showWarnings = FALSE, recursive = TRUE)
 
 #########################################
-# Calculating mean rasters by year groups
+# Mean rasters per period
 
 # Variables that represent monthly totals
 sum_vars <- c("aet", "def", "pet", "ppt", "q")
 
 for (period in names(period_years)) {
-  
+
   print(period)
   years <- period_years[[period]]
-  
+
   for (v in pred_vars) {
-    
+
     print(v)
-    
-    # Select the five yearly NetCDF files
+
+    # Five yearly NetCDF files
     files <- file.path("data/climate",
                        paste0("TerraClimate_", v, "_", years, ".nc"))
-    
+
     if (!all(file.exists(files))) {
       stop("Missing files for ", period, " / ", v)
     }
-    
-    # Summarise each year's 12 monthly layers
+
+    # Annual summaries of months
     annual_rasters <- lapply(files, function(f) {
-      
+
       r <- rast(f)
-      
+
       if (nlyr(r) != 12) {
         stop("Expected 12 monthly layers in ", basename(f))
       }
-      
+
       if (v %in% sum_vars) {
         sum(r, na.rm = TRUE)
       } else {
         mean(r, na.rm = TRUE)
       }
     })
-    
+
     # Combine the five annual rasters
     r <- do.call(c, annual_rasters)
-    
-    # Calculate mean across the five years
+
+    # Five-year mean
     mean_ras <- mean(r, na.rm = TRUE)
-    
+
     # Export raster
     writeRaster(mean_ras,
                 paste0("data/pred_mean/", period, "_", v, ".tif"),
@@ -74,23 +73,22 @@ for (period in names(period_years)) {
   }
 }
 
-
 #########################################
-# Calculating overall mean rasters for 2001-2025
+# Overall mean rasters 2001-2025
 
 for (v in pred_vars) {
-  
+
   print(v)
-  
+
   # Read the five period rasters
   files <- file.path("data/pred_mean",
                      paste0(names(period_years), "_", v, ".tif"))
-  
+
   r <- rast(files)
-  
+
   # Calculate overall mean
   mean_ras <- mean(r, na.rm = TRUE)
-  
+
   # Export raster
   writeRaster(mean_ras,
               paste0("data/pred_mean/ov/", v, ".tif"),
@@ -98,11 +96,10 @@ for (v in pred_vars) {
               overwrite = TRUE)
 }
 
-
 #########################################
 # Resampling elevation raster
 
-# Use one of the climate rasters as the template
+# Climate raster template
 template <- rast("data/pred_mean/yr1_aet.tif")
 
 # Import elevation raster
@@ -118,21 +115,20 @@ if (!same.crs(elev, template)) {
 # Apply the same spatial mask
 elev_re <- mask(elev_re, template)
 
-# Save the same elevation layer for each year interval
+# Elevation for each period
 for (period in names(period_years)) {
-  
+
   writeRaster(elev_re,
               paste0("data/pred_mean/", period, "_elev.tif"),
               NAflag = -9999,
               overwrite = TRUE)
 }
 
-# Also save elevation with the overall 2001-2025 predictors
+# Add elevation to overall predictors
 writeRaster(elev_re,
             "data/pred_mean/ov/elev.tif",
             NAflag = -9999,
             overwrite = TRUE)
-
 
 #########################################
 # Predictor variable collinearity
@@ -175,12 +171,11 @@ correlated_pairs <- data.frame(
 
 correlated_pairs
 
-
 #########################################
 # Final selected predictor variables
 vars_final <- c("PDSI", "ppt", "soil", "tmin", "ws", "elev")
 
-# Create folder for final environmental predictors
+# Folder for final predictors
 dir.create("data/env", showWarnings = FALSE, recursive = TRUE)
 
 #########################################
@@ -196,26 +191,25 @@ writeRaster(env,
             NAflag = -9999,
             overwrite = TRUE)
 
-
 #########################################
-# Environmental predictors for each 5-year interval
+# Predictors per period
 for (period in names(period_years)) {
-  
+
   print(period)
-  
-  # Select only the final predictor variables
+
+  # Final predictors
   files <- file.path("data/pred_mean",
                      paste0(period, "_", vars_final, ".tif"))
-  
+
   # Check that all files exist
   if (!all(file.exists(files))) {
     stop("Missing predictor files for ", period)
   }
-  
+
   # Combine selected predictors
   env_period <- rast(files)
   names(env_period) <- vars_final
-  
+
   # Save as one multi-layer raster
   writeRaster(env_period,
               paste0("data/env/env_", period, ".tif"),
@@ -223,16 +217,14 @@ for (period in names(period_years)) {
               overwrite = TRUE)
 }
 
-
 #########################################
-# Creating background points for the distribution model
-# Create a raster containing only cells where all predictors have data
+# Background points
 valid_cells <- ifel(sum(is.na(env)) == 0, 1, NA)
 
 # Create 20,000 random background points
 set.seed(123)
 
-bg <- spatSample(valid_cells, size = 20000, method = "random", na.rm = TRUE, 
+bg <- spatSample(valid_cells, size = 20000, method = "random", na.rm = TRUE,
                  xy = TRUE, values = FALSE, as.df = TRUE)
 
 # Convert to data frame
